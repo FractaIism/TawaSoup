@@ -156,3 +156,31 @@ class Test(TestCase):
         screen = cv.imread("assets/game3.png")
         match_boxes = utils.findItemCoordinates(screen, "assets/watch_ad.png", use_mask = False)
         self.assertListEqual(match_boxes, [])
+
+    def test_blocking(self):
+        """ Find the min threshold required to detect each and every item
+        Result: 0.93 """
+
+        least_threshold = 100.0
+
+        for item in ['cannonball', 'chest', 'gold', 'ice', 'rock', 'wood']:
+            img = cv.imread(f"assets/blocked/blocked_{item}.png")
+            template_file = f"assets/{item}.png"
+            # image to search for in game screen
+            template = cv.imread(template_file, cv.IMREAD_UNCHANGED)  # color mode: BGRA
+            # isolate template's alpha channel to create mask
+            # this mask will allow us to ignore the grass background when template matching
+            alpha = template[:, :, 3]
+            template_mask = cv.merge([alpha, alpha, alpha])
+            # remove alpha channel to make the dimensions same as img
+            template = cv.cvtColor(template, cv.COLOR_BGRA2BGR)
+
+            # create a map of template match score, larger value = whiter = better match (with method cv.TM_CCORR_NORMED)
+            res = cv.matchTemplate(img, template, cv.TM_CCORR_NORMED, mask = template_mask)
+
+            min_val, max_val, min_loc, max_loc = cv.minMaxLoc(res)
+            print(item, max_val)
+            if max_val < least_threshold:
+                least_threshold = max_val
+
+        print("least threshold ", least_threshold)

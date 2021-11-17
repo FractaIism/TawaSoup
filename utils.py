@@ -1,4 +1,4 @@
-import random
+from random import randint
 import time
 from typing import Optional
 
@@ -162,6 +162,7 @@ def waitUntilScreenStable(interval: float = 0.1):
             break
 
 def screenshotBGR() -> np.ndarray:
+    """ Take a screenshot in RGB and convert it to BGR """
     screenRGB = np.array(pag.screenshot())
     screenBGR = cv.cvtColor(screenRGB, cv.COLOR_RGB2BGR)
     return screenBGR
@@ -170,37 +171,7 @@ def imageIsPresent(screen: np.ndarray, template_file: str, threshold: float = 0.
     """ Check if an image is present on the screen """
     return bool(findItemCoordinates(screen, template_file, threshold = threshold, use_mask = use_mask, deduplicate = False))
 
-def strategize(board: np.ndarray) -> tuple[int, int, str]:
-    """ Derive the next move from the current gameboard state
-    Input: gameboard
-    Output: (y,x) of item to move and the direction (up,down,left,right) """
-
-    # strategy: accumulate the same items at the bottom of the
-    # leftmost column / rightmost column / bottom row
-    # and throw other items into the sea :D
-
-    if (board[:, 0] != -1).all() and (board[:, 0] != 5).all():
-        item_code = board[5, 0]
-        for i in [4, 3, 2, 1, 0]:
-            if board[i, 0] != item_code:
-                return i, 0, 'left'
-
-    elif (board[:, 5] != -1).all() and (board[:, 5] != 5).all():
-        item_code = board[5, 5]
-        for i in [4, 3, 2, 1, 0]:
-            if board[i, 5] != item_code:
-                return i, 5, 'right'
-
-    elif (board[5, :] != -1).all() and (board[5, :] != 5).all():
-        item_code = board[5, 0]
-        for i in [1, 2, 3, 4, 5]:
-            if board[5, i] != item_code:
-                return 5, i, 'down'
-
-    else:
-        return random.randint(0, 5), random.randint(1, 5), 'up'
-
-def findItemCoordinates(img: np.ndarray, template_file: str, method: int = cv.TM_CCORR_NORMED, threshold: float = 0.95, use_mask: bool = True, deduplicate: bool = True) -> list[BoundingBox]:
+def findItemCoordinates(img: np.ndarray, template_file: str, method: int = cv.TM_CCORR_NORMED, threshold: float = 0.93, use_mask: bool = True, deduplicate: bool = True) -> list[BoundingBox]:
     """ Find occurrences of an item in a game screenshot, deduplication included.
     Input: image (screenshot), template file path
     Output: list of item bounding boxes [BoundingBox(x1,y1,x2,y2), ...] where x1 < x2 and y1 < y2 """
@@ -249,3 +220,65 @@ def findItemCoordinates(img: np.ndarray, template_file: str, method: int = cv.TM
         return list(map(lambda t: BoundingBox(*(t.int().tolist())), boxes[filt_idxs]))
     else:
         return list(map(lambda c: BoundingBox(*c), list(zip(x1, y1, x2, y2))))
+
+def getNextMove(board: np.ndarray) -> tuple[int, int, str]:
+    """ Derive the next move from the current gameboard state
+    Input: gameboard
+    Output: (y,x) of item to move and the direction (up,down,left,right) """
+
+    # freq[i,j] = number of item j's on row i
+    freq: np.ndarray = np.zeros((6, len(config.items)), dtype = np.uint8)
+    max_freq = -1
+    max_freq_row = -1
+    max_freq_item = -1
+    for row in range(6):
+        for col in range(6):
+            item_code = board[row][col]
+            if 0 <= item_code < len(config.items):
+                freq[row][item_code] += 1
+                if freq[row][item_code] > max_freq:
+                    max_freq = freq[row][item_code]
+                    max_freq_row = row
+                    max_freq_item = item_code
+    if max_freq >= 3:
+        # there are three or more of the same item in max freq row, try to bring them together
+        row_items: np.ndarray = board[max_freq_row, :]
+        max_freq_item_cols: np.ndarray = np.array([key for key, val in enumerate(row_items) if val == max_freq_item])
+        center = np.mean(max_freq_item_cols)  # make items approach the center point
+        # prioritize moving items further from center (add 1e-9 to prevent division by zero)
+        for col in sorted(max_freq_item_cols, key = lambda column: 1 / (column - center + 1e-9) ** 2):
+            if col < center:
+                # if invalid swap, skip
+                if row_items[col + 1] != max_freq_item:
+                    return max_freq_row, col, 'right'
+            elif col > center:
+                # if invalid swap, skip
+                if row_items[col - 1] != max_freq_item:
+                    return max_freq_row, col, 'left'
+            else:  # col == center
+                # just stay at the center
+                continue
+        # program shouldn't reach this point, but if it does just let it crash
+        pass
+    else:
+        # if max freq row has less than 3 of the same item, grab more from another row
+        rows = [0, 1, 2, 3, 4, 5]
+        rows.remove(max_freq_row)
+        # sort by how close the row is to max freq row (closest to farthest)
+        rows.sort(key = lambda row: (row - max_freq_row) ** 2)
+        # find a (closest) row from which to move the max freq item into max freq row
+        closest: Optional[tuple[int, int]] = None  # board coord (row,col) of item to move
+        for row in rows:
+            for col in [2, 3, 1, 4, 0, 5]:  # prioritize cols closer to the middle
+                if board[row][col] == max_freq_item and board[max_freq_row][col] != max_freq_item:
+                    closest = (row, col)
+                    break
+            if closest is not None:
+                break
+        # if max freq item wasn't found, make a random move
+        if closest is None:
+            return randint(1, 4), randint(1, 4), ['up', 'down', 'left', 'right'][randint(0, 3)]
+        # determine which way to move it (up/down)
+        move_dir = 'down' if closest[0] < max_freq_row else 'up'
+
+        return closest[0], closest[1], move_dir

@@ -48,6 +48,7 @@ while True:
         count += 1
 
     # to cope with chain reactions
+    print("Waiting for screen stabilize...")
     utils.waitUntilScreenStable()
 
     # if game over, exit program
@@ -58,6 +59,6 @@ while True:
     # get board state, strategize, and make a move
     print("Analyzing board state...")
     gameboard = utils.getBoardState(screen, basis)
-    y, x, d = utils.strategize(gameboard)
+    y, x, d = utils.getNextMove(gameboard)
     print(f"Move: x={x}, y={y}, direction={d}")
     utils.moveItem(x, y, d, basis)
