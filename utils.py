@@ -9,46 +9,9 @@ import torch
 import torchvision
 
 import config
+from config import BoundingBox, Basis
 
-class BoundingBox:
-    """ Bounding box of detected objects in image
-    (x1,y1) = upper left corner
-    (x2,y2) = lower right corner """
-
-    x1: int
-    y1: int
-    x2: int
-    y2: int
-
-    def __init__(self, x1, y1, x2, y2):
-        self.x1 = x1
-        self.y1 = y1
-        self.x2 = x2
-        self.y2 = y2
-
-    def toTuple(self) -> tuple[int, int, int, int]:
-        return self.x1, self.y1, self.x2, self.y2
-
-    def centerX(self) -> int:
-        return int((self.x1 + self.x2) / 2)
-
-    def centerY(self) -> int:
-        return int((self.y1 + self.y2) / 2)
-
-class Basis:
-    """ Similar to the linear algebra basis in the sense that these 3 values define the board.
-    Can this really be called a basis? Couldn't find a better name. """
-
-    x0: int  # screen coord of the center of the topleft plot
-    y0: int  # screen coord of the center of the topleft plot
-    plotsize: int  # the height/width of a plot
-
-    def __init__(self, tlx, tly, ps):
-        self.x0 = tlx
-        self.y0 = tly
-        self.plotsize = ps
-
-def getBoardState(screen: np.ndarray, basis: Basis) -> np.ndarray:
+def getBoardState(screen: np.ndarray) -> np.ndarray:
     """ Get board state as array from screenshot.
     Input: screenshot of the game board and a basis
     Output: numpy array representing the game board """
@@ -60,7 +23,7 @@ def getBoardState(screen: np.ndarray, basis: Basis) -> np.ndarray:
 
     # for each game item, find all their bounding boxes
     for item_code, item in enumerate(config.items):
-        match_boxes: list[BoundingBox] = findItemCoordinates(screen, f"assets/{item}.png")
+        match_boxes: list[BoundingBox] = findItemBoundingBoxes(screen, f"assets/{item}.png")
         if match_boxes is not None:
             all_matched_boxes.extend(match_boxes)
             all_matched_items.extend([(box, item_code) for box in match_boxes])
@@ -68,7 +31,7 @@ def getBoardState(screen: np.ndarray, basis: Basis) -> np.ndarray:
     # create board representation
     board = np.ones(shape = (6, 6), dtype = np.int8) * -1
     for box, item_code in all_matched_items:
-        board_x, board_y = screenToBoardCoords(basis.x0, basis.y0, box.centerX(), box.centerY(), basis.plotsize)
+        board_x, board_y = screenToBoardCoords(box.centerX(), box.centerY())
         board[board_y, board_x] = item_code
 
     return board
@@ -76,14 +39,13 @@ def getBoardState(screen: np.ndarray, basis: Basis) -> np.ndarray:
 def findBoardContour(screen: np.ndarray) -> Basis:
     """ Get a basis to create mapping between screen and board coordinates
     Input: screenshot of the game
-    Output: (x,y) coordinates of center of topleft plot, and plot size """
+    Output: a basis, including coords of center of topleft plot, and plot size """
 
     # first find the bounding boxes of all known items
     boxes: list[BoundingBox] = []
     for item_code, item in enumerate(config.items):
-        match_boxes: list[BoundingBox] = findItemCoordinates(screen, f"assets/{item}.png")
-        if match_boxes is not None:
-            boxes.extend(match_boxes)
+        match_boxes: list[BoundingBox] = findItemBoundingBoxes(screen, f"assets/{item}.png")
+        boxes.extend(match_boxes)
 
     # then find the indexes of the outermost items
     x1_list, y1_list, x2_list = [], [], []
@@ -103,23 +65,31 @@ def findBoardContour(screen: np.ndarray) -> Basis:
 
     return Basis(topleftX, topleftY, plotsize)
 
-def screenToBoardCoords(x0, y0, xx, yy, ps) -> tuple[int, int]:
-    """ Inputs:
-    x0, y0: screen coords of center of topleft plot
-    xx, yy: screen coords of center of current plot
-    ps: plot size
-    Output: (x,y) board coords of current plot """
+def screenToBoardCoords(sx: int, sy: int) -> tuple[int, int]:
+    """ Inputs: (x,y) screen coords of center of plot
+    Output: (x,y) board coords of plot """
 
-    board_x: int = round((xx - x0) / ps)
-    board_y: int = round((yy - y0) / ps)
-
+    B = config.basis
+    board_x: int = round((sx - B.x0) / B.plotsize)
+    board_y: int = round((sy - B.y0) / B.plotsize)
     return board_x, board_y
 
-def moveItem(board_x: int, board_y: int, direction: str, basis: Basis) -> None:
-    """ Input: item board coordinates
+def boardToScreenCoords(bx: int, by: int) -> tuple[int, int]:
+    """ Inputs:
+    bx,by: board coords
+    Output: (x,y) screen coords """
+
+    B = config.basis
+    screen_x = B.x0 + bx * B.plotsize
+    screen_y = B.y0 + by * B.plotsize
+    return screen_x, screen_y
+
+def moveItem(board_x: int, board_y: int, direction: str) -> None:
+    """ Move an item one plot left/right/up/down
+    Input: item board coordinates
     Output: None """
 
-    board_move_vector: Optional[np.ndarray] = None
+    board_move_vector: np.ndarray = np.array((0, 0))
 
     if direction == 'left':
         board_move_vector = np.array((-1, 0))
@@ -130,36 +100,62 @@ def moveItem(board_x: int, board_y: int, direction: str, basis: Basis) -> None:
     elif direction == 'down':
         board_move_vector = np.array((0, 1))
 
-    screen_move_vector = board_move_vector * basis.plotsize
-    screen_src_coord = (basis.x0 + basis.plotsize * board_x, basis.y0 + basis.plotsize * board_y)
+    screen_move_vector = board_move_vector * config.basis.plotsize
+    screen_src_coord = boardToScreenCoords(board_x, board_y)
     screen_dst_coord = screen_src_coord + screen_move_vector
 
-    pag.moveTo(*screen_src_coord)
-    time.sleep(0.2)
+    if pag.position() != pag.Point(*screen_src_coord):
+        pag.moveTo(*screen_src_coord, 0.5, pag.easeInOutQuad)
     pag.dragTo(*screen_dst_coord, 0.5, pag.easeInOutQuad)
 
-def waitUntilImageLocated(img_path: str, threshold: float = 0.95, use_mask: bool = False) -> BoundingBox:
+def waitUntilImageLocated(img_path: str, threshold: float = 0.95, use_mask: bool = False, timeout: int = 60) -> Optional[BoundingBox]:
     screen = cv.cvtColor(np.array(pag.screenshot()), cv.COLOR_RGB2BGR)
-    tries = 0
+    interval = 0.1
     detection: Optional[list[BoundingBox]]
+    start = time.perf_counter()
+    elapsed = 0
 
-    while not (detection := findItemCoordinates(screen, img_path, threshold = threshold, use_mask = use_mask, deduplicate = False)):
-        print(f"{img_path} not found {tries}")
-        time.sleep(0.2)
-        tries += 1
+    while not (detection := findItemBoundingBoxes(screen, img_path, threshold = threshold, use_mask = use_mask, deduplicate = False)):
+        print(f"{img_path} not found {round(elapsed, 3)}")
+        time.sleep(interval)
         screen = cv.cvtColor(np.array(pag.screenshot()), cv.COLOR_RGB2BGR)
+        if (elapsed := time.perf_counter() - start) > timeout:
+            print("waitUntilImageLocated(): timeout")
+            return None
 
     centerCoord: BoundingBox = detection[0]
 
     return centerCoord
 
-def waitUntilScreenStable(interval: float = 0.1):
+def waitUntilImageNotLocated(img_path: str, threshold: float = 0.95, use_mask: bool = False, timeout: int = 60) -> None:
+    interval = 0.1
+    start = time.perf_counter()
+    elapsed = 0
+
+    while imageIsPresent(screenshotBGR(), img_path, threshold = threshold, use_mask = use_mask):
+        print(f"{img_path} still present {round(elapsed, 3)}")
+        time.sleep(interval)
+        if (elapsed := time.perf_counter() - start) > timeout:
+            print("waitUntilImageNotLocated(): timeout")
+            return
+
+def waitUntilScreenStable(interval: float = 0.1, timeout: int = 60) -> Optional[int]:
+    """ Wait until the screen is no longer changing
+    Return -1 if timeout, else return None """
+
+    start = time.perf_counter()
+    elapsed = 0
+
     while True:
+        print(f"Waiting for screen stabilize {round(elapsed, 3)}")
         scr1 = pag.screenshot()
         time.sleep(interval)
         scr2 = pag.screenshot()
         if scr1 == scr2:
             break
+        elif (elapsed := time.perf_counter() - start) > timeout:
+            print("waitUntilScreenStable(): timeout")
+            return -1
 
 def screenshotBGR() -> np.ndarray:
     """ Take a screenshot in RGB and convert it to BGR """
@@ -167,14 +163,18 @@ def screenshotBGR() -> np.ndarray:
     screenBGR = cv.cvtColor(screenRGB, cv.COLOR_RGB2BGR)
     return screenBGR
 
-def imageIsPresent(screen: np.ndarray, template_file: str, threshold: float = 0.95, use_mask: bool = False):
+def imageIsPresent(screen: np.ndarray, template_file: str, threshold: float = 0.95, use_mask: bool = False) -> bool:
     """ Check if an image is present on the screen """
-    return bool(findItemCoordinates(screen, template_file, threshold = threshold, use_mask = use_mask, deduplicate = False))
+    return bool(findItemBoundingBoxes(screen, template_file, threshold = threshold, use_mask = use_mask, deduplicate = False))
 
-def findItemCoordinates(img: np.ndarray, template_file: str, method: int = cv.TM_CCORR_NORMED, threshold: float = 0.93, use_mask: bool = True, deduplicate: bool = True) -> list[BoundingBox]:
+def findItemBoundingBoxes(img: np.ndarray, template_file: str, method: int = cv.TM_CCORR_NORMED, threshold: float = 0.93, use_mask: bool = True, deduplicate: bool = True) -> list[BoundingBox]:
     """ Find occurrences of an item in a game screenshot, deduplication included.
     Input: image (screenshot), template file path
     Output: list of item bounding boxes [BoundingBox(x1,y1,x2,y2), ...] where x1 < x2 and y1 < y2 """
+
+    # grab only region of interest to save computation time
+    roi = config.roi
+    subimg = img[roi.y1:roi.y2, roi.x1:roi.x2, :]
 
     # use mask to apply BGRA templates, don't use mask for BGR templates
     if use_mask:
@@ -188,10 +188,10 @@ def findItemCoordinates(img: np.ndarray, template_file: str, method: int = cv.TM
         template = cv.cvtColor(template, cv.COLOR_BGRA2BGR)
 
         # create a map of template match score, larger value = whiter = better match (with method cv.TM_CCORR_NORMED)
-        res = cv.matchTemplate(img, template, method, mask = template_mask)
+        res = cv.matchTemplate(subimg, template, method, mask = template_mask)
     else:
         template = cv.imread(template_file, cv.IMREAD_COLOR)
-        res = cv.matchTemplate(img, template, method)
+        res = cv.matchTemplate(subimg, template, method)
 
     # find coordinates [[y1, y2, ...], [x1, x2, ...]] of matching locations in img
     loc = np.where(res >= threshold)
@@ -202,8 +202,8 @@ def findItemCoordinates(img: np.ndarray, template_file: str, method: int = cv.TM
     # get the bounding boxes of each match
     # boxes are defined by their top-left corner (x1,y1) and bottom-right corner (x2,y2), where x1 < x2 and y1 < y2
     h, w, _ = template.shape
-    x1 = loc[1]
-    y1 = loc[0]
+    x1 = loc[1] + roi.x1
+    y1 = loc[0] + roi.y1
     x2 = x1 + w
     y2 = y1 + h
 
@@ -282,3 +282,9 @@ def getNextMove(board: np.ndarray) -> tuple[int, int, str]:
         move_dir = 'down' if closest[0] < max_freq_row else 'up'
 
         return closest[0], closest[1], move_dir
+
+def findRegionOfInterest() -> None:
+    """ Set screenshot region of interest in config file to speed up template matching """
+
+    B = config.basis
+    config.roi = BoundingBox(x1 = B.x0 - 1 * B.plotsize, y1 = 0, x2 = B.x0 + 6 * B.plotsize, y2 = pag.size()[1])

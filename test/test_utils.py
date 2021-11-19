@@ -1,25 +1,45 @@
 import os
 import random
-import time
 from unittest import TestCase
 
-import numpy as np
-import numpy.testing
-import pyautogui as pag
 import cv2.cv2 as cv
+import numpy as np
+import pyautogui as pag
 
 import config
 import utils
+from config import Basis
 
 def initGame() -> None:
     """ Open game and click click """
 
-    os.system("chrome --start-maximized https://towerswap.app/play")
+    os.system("microsoftedge https://towerswap.app/play")
     btn_box_1 = utils.waitUntilImageLocated("assets/play_now.png")
     pag.click(x = btn_box_1.centerX(), y = btn_box_1.centerY())
     btn_box_2 = utils.waitUntilImageLocated("assets/play.png")
     pag.click(x = btn_box_2.centerX(), y = btn_box_2.centerY())
     utils.waitUntilScreenStable()
+
+def getTemplateMatchingScore(img: np.ndarray, template_file: str, method = cv.TM_CCORR_NORMED, use_mask: bool = False) -> float:
+    """ Get max matching score for template matching """
+
+    if use_mask:
+        # image to search for in game screen
+        template = cv.imread(template_file, cv.IMREAD_UNCHANGED)  # color mode: BGRA
+        # isolate template's alpha channel to create mask
+        # this mask will allow us to ignore the grass background when template matching
+        alpha = template[:, :, 3]
+        template_mask = cv.merge([alpha, alpha, alpha])
+        # remove alpha channel to make the dimensions same as img
+        template = cv.cvtColor(template, cv.COLOR_BGRA2BGR)
+        # create a map of template match score, larger value = whiter = better match (with method cv.TM_CCORR_NORMED)
+        res = cv.matchTemplate(img, template, method, mask = template_mask)
+    else:
+        template = cv.imread(template_file, cv.IMREAD_COLOR)
+        res = cv.matchTemplate(img, template, method)
+
+    min_val, max_val, min_loc, max_loc = cv.minMaxLoc(res)
+    return max_val
 
 class Test(TestCase):
     def setUp(self) -> None:
@@ -30,7 +50,7 @@ class Test(TestCase):
         (requires manual checking) """
 
         screen = cv.imread("assets/game3.png")
-        basis: utils.Basis = utils.findBoardContour(screen)
+        basis: Basis = utils.findBoardContour(screen)
         x0 = basis.x0
         y0 = basis.y0
         ps = basis.plotsize
@@ -55,7 +75,7 @@ class Test(TestCase):
 
         initGame()
         screen = cv.cvtColor(np.array(pag.screenshot()), cv.COLOR_RGB2BGR)
-        basis: utils.Basis = utils.findBoardContour(screen)
+        basis: Basis = utils.findBoardContour(screen)
         x0 = basis.x0
         y0 = basis.y0
         ps = basis.plotsize
@@ -75,29 +95,29 @@ class Test(TestCase):
         cv.waitKey(0)
 
     def test_get_board_state(self):
-        """ Get board state from screenshot game3.png """
+        """ Get board state from game3.png """
 
         screen = cv.imread("assets/game3.png")
         basis = utils.findBoardContour(screen)
-        board = utils.getBoardState(screen, basis)
+        board = utils.getBoardState(screen)
 
         print(board, end = "\n\n")
         for idx, item in enumerate(config.items):
             print(idx, item)
 
-        numpy.testing.assert_array_equal(board, np.array([[0, 2, 1, 4, 3, 2], [2, 4, 3, 0, 1, 3], [3, 0, 2, 0, 5, 1], [3, -1, 1, -1, 3, 2], [2, 3, 1, -1, 0, -1], [1, 2, 2, 5, 2, -1]]))
+        np.testing.assert_array_equal(board, np.array([[0, 2, 1, 4, 3, 2], [2, 4, 3, 0, 1, 3], [3, 0, 2, 0, -1, 1], [3, -1, 1, -1, 3, 2], [2, 3, 1, -1, 0, -1], [1, 2, 2, -1, 2, -1]]))
 
     def test_move_item(self):
         """ Move some arbitrary items around
         (opens game window, requires manual checking) """
 
         initGame()
-        basis = utils.findBoardContour(utils.screenshotBGR())
+        config.basis = utils.findBoardContour(utils.screenshotBGR())
 
-        utils.moveItem(1, 0, 'left', basis)
-        utils.moveItem(1, 2, 'right', basis)
-        utils.moveItem(5, 5, 'up', basis)
-        utils.moveItem(3, 3, 'down', basis)
+        utils.moveItem(1, 0, 'left')
+        utils.moveItem(1, 2, 'right')
+        utils.moveItem(5, 5, 'up')
+        utils.moveItem(3, 3, 'down')
 
     def test_detect_night(self):
         """ Check if waitUntilImageLocated can detect night time
@@ -111,7 +131,7 @@ class Test(TestCase):
         for i in range(10):
             x = random.randint(0, 5)
             y = random.randint(1, 5)
-            utils.moveItem(x, y, 'down', basis)
+            utils.moveItem(x, y, 'down')
 
         det = utils.waitUntilImageLocated("assets/zero_swaps.png")
         print("Night detected")
@@ -125,7 +145,7 @@ class Test(TestCase):
         self.assertFalse(utils.imageIsPresent(screen, zeroswaps))
         self.assertTrue(utils.imageIsPresent(screen, swaps))
 
-    def test_find_item_coordinates(self):
+    def test_find_item_bounding_boxes(self):
         """ Identify each type of item in game3.png
         (requires manual checking) """
 
@@ -135,7 +155,7 @@ class Test(TestCase):
 
         for idx, item in enumerate(items):
             img2 = img.copy()
-            match_boxes = utils.findItemCoordinates(img, f"assets/{item}.png")
+            match_boxes = utils.findItemBoundingBoxes(img, f"assets/{item}.png")
 
             # draw bounding boxes around locations that match the template
             for box in match_boxes:
@@ -150,11 +170,11 @@ class Test(TestCase):
             # make sure the number of matches is correct (none missing or duplicate)
             self.assertEqual(len(match_boxes), quantities[idx])
 
-    def test_find_item_coordinates_2(self):
+    def test_find_item_bounding_boxes_2(self):
         """ Check that findItemCoordinates() returns [] when a template is not matched """
 
         screen = cv.imread("assets/game3.png")
-        match_boxes = utils.findItemCoordinates(screen, "assets/watch_ad.png", use_mask = False)
+        match_boxes = utils.findItemBoundingBoxes(screen, "assets/watch_ad.png", use_mask = False)
         self.assertListEqual(match_boxes, [])
 
     def test_blocking(self):
@@ -166,21 +186,26 @@ class Test(TestCase):
         for item in ['cannonball', 'chest', 'gold', 'ice', 'rock', 'wood']:
             img = cv.imread(f"assets/blocked/blocked_{item}.png")
             template_file = f"assets/{item}.png"
-            # image to search for in game screen
-            template = cv.imread(template_file, cv.IMREAD_UNCHANGED)  # color mode: BGRA
-            # isolate template's alpha channel to create mask
-            # this mask will allow us to ignore the grass background when template matching
-            alpha = template[:, :, 3]
-            template_mask = cv.merge([alpha, alpha, alpha])
-            # remove alpha channel to make the dimensions same as img
-            template = cv.cvtColor(template, cv.COLOR_BGRA2BGR)
-
-            # create a map of template match score, larger value = whiter = better match (with method cv.TM_CCORR_NORMED)
-            res = cv.matchTemplate(img, template, cv.TM_CCORR_NORMED, mask = template_mask)
-
-            min_val, max_val, min_loc, max_loc = cv.minMaxLoc(res)
+            max_val = getTemplateMatchingScore(img, template_file, use_mask = True)
             print(item, max_val)
             if max_val < least_threshold:
                 least_threshold = max_val
 
         print("least threshold ", least_threshold)
+
+    def test_detect_king(self):
+        """ Check king's template matching score """
+        screen = cv.imread("assets/testking.png")
+        template_file = "assets/king.png"
+        score = getTemplateMatchingScore(screen, template_file, use_mask = True)
+        print(score)
+
+    def test_find_region_of_interest(self):
+        """ Check ROI correctness """
+        screen = cv.imread("assets/game3.png")
+        config.basis = utils.findBoardContour(screen)
+        utils.findRegionOfInterest()
+        r = config.roi
+        cv.rectangle(screen, (r.x1, r.y1), (r.x2, r.y2), (0, 0, 255), 2)
+        cv.imshow("roi", cv.resize(screen, None, fx = .5, fy = .5))
+        cv.waitKey(0)
